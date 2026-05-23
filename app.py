@@ -62,6 +62,7 @@ with st.sidebar:
     tickers = [
         x.strip().upper()
         for x in ticker_input.split(",")
+        if x.strip()
     ]
 
     benchmark = st.text_input(
@@ -71,12 +72,14 @@ with st.sidebar:
 
     period = st.selectbox(
         "Period",
-        ["1mo", "3mo", "6mo", "1y", "2y", "5y"]
+        ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
+        index=3
     )
 
     interval = st.selectbox(
         "Interval",
-        ["1d", "1wk", "1mo"]
+        ["1d", "1wk", "1mo"],
+        index=0
     )
 
     risk_free_rate = st.slider(
@@ -87,25 +90,32 @@ with st.sidebar:
     )
 
 # =========================================================
-# DOWNLOAD DATA
+# DATA DOWNLOAD
 # =========================================================
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def download_data(tickers, period, interval):
 
     data = {}
 
     for ticker in tickers:
 
-        df = yf.download(
-            ticker,
-            period=period,
-            interval=interval,
-            progress=False
-        )
+        try:
 
-        if not df.empty:
-            data[ticker] = df
+            df = yf.download(
+                ticker,
+                period=period,
+                interval=interval,
+                progress=False,
+                auto_adjust=False
+            )
+
+            if not df.empty:
+                df = df.dropna()
+                data[ticker] = df
+
+        except:
+            pass
 
     return data
 
@@ -115,43 +125,75 @@ market_data = download_data(
     interval
 )
 
-benchmark_data = yf.download(
-    benchmark,
-    period=period,
-    interval=interval,
-    progress=False
-)
+try:
 
-vix_data = yf.download(
-    "^VIX",
-    period=period,
-    interval=interval,
-    progress=False
-)
+    benchmark_data = yf.download(
+        benchmark,
+        period=period,
+        interval=interval,
+        progress=False
+    )
+
+    benchmark_data = benchmark_data.dropna()
+
+except:
+
+    benchmark_data = pd.DataFrame()
+
+try:
+
+    vix_data = yf.download(
+        "^VIX",
+        period=period,
+        interval=interval,
+        progress=False
+    )
+
+    vix_data = vix_data.dropna()
+
+except:
+
+    vix_data = pd.DataFrame()
 
 # =========================================================
 # FUNCTIONS
 # =========================================================
 
 def annualized_return(returns):
+
     return ((1 + returns.mean()) ** 252) - 1
 
 def annualized_volatility(returns):
+
     return returns.std() * np.sqrt(252)
 
 def sharpe_ratio(ret, vol, rf):
 
-    if vol == 0:
+    if vol == 0 or np.isnan(vol):
         return 0
 
     return (ret - rf) / vol
 
 def beta(asset_returns, benchmark_returns):
 
-    covariance = np.cov(asset_returns, benchmark_returns)[0][1]
-    benchmark_variance = np.var(benchmark_returns)
+    try:
 
-    return covariance / benchmark_variance
+        covariance = np.cov(
+            asset_returns,
+            benchmark_returns
+        )[0][1]
+
+        benchmark_variance = np.var(
+            benchmark_returns
+        )
+
+        if benchmark_variance == 0:
+            return 0
+
+        return covariance / benchmark_variance
+
+    except:
+        return 0
 
 def value_at_risk(returns, confidence=0.95):
 
@@ -166,45 +208,93 @@ def value_at_risk(returns, confidence=0.95):
 
 def add_indicators(df):
 
-    df["EMA7"] = ta.trend.ema_indicator(df["Close"], window=7)
-    df["EMA30"] = ta.trend.ema_indicator(df["Close"], window=30)
-    df["EMA50"] = ta.trend.ema_indicator(df["Close"], window=50)
-    df["EMA200"] = ta.trend.ema_indicator(df["Close"], window=200)
+    df["EMA7"] = ta.trend.ema_indicator(
+        df["Close"],
+        window=7
+    )
 
-    bb = ta.volatility.BollingerBands(df["Close"])
+    df["EMA30"] = ta.trend.ema_indicator(
+        df["Close"],
+        window=30
+    )
+
+    df["EMA50"] = ta.trend.ema_indicator(
+        df["Close"],
+        window=50
+    )
+
+    df["EMA200"] = ta.trend.ema_indicator(
+        df["Close"],
+        window=200
+    )
+
+    bb = ta.volatility.BollingerBands(
+        df["Close"]
+    )
 
     df["BB_UPPER"] = bb.bollinger_hband()
+
     df["BB_LOWER"] = bb.bollinger_lband()
 
-    df["RSI"] = ta.momentum.rsi(df["Close"])
+    df["RSI"] = ta.momentum.rsi(
+        df["Close"]
+    )
 
-    macd = ta.trend.MACD(df["Close"])
+    macd = ta.trend.MACD(
+        df["Close"]
+    )
 
     df["MACD"] = macd.macd()
+
     df["MACD_SIGNAL"] = macd.macd_signal()
 
     return df
 
 def generate_signal(df):
 
-    latest = df.iloc[-1]
+    try:
 
-    if latest["EMA7"] > latest["EMA30"] and latest["RSI"] < 70:
-        return "BUY"
+        latest = df.iloc[-1]
 
-    elif latest["EMA7"] < latest["EMA30"] and latest["RSI"] > 30:
-        return "SELL"
+        if (
+            latest["EMA7"] > latest["EMA30"]
+            and latest["RSI"] < 70
+        ):
+            return "BUY"
 
-    return "HOLD"
+        elif (
+            latest["EMA7"] < latest["EMA30"]
+            and latest["RSI"] > 30
+        ):
+            return "SELL"
+
+        return "HOLD"
+
+    except:
+        return "HOLD"
 
 def forecast_prices(df):
 
-    model = ARIMA(df["Close"], order=(5,1,0))
-    model_fit = model.fit()
+    try:
 
-    forecast = model_fit.forecast(steps=90)
+        if len(df) < 60:
+            return None
 
-    return forecast
+        model = ARIMA(
+            df["Close"],
+            order=(5,1,0)
+        )
+
+        model_fit = model.fit()
+
+        forecast = model_fit.forecast(
+            steps=90
+        )
+
+        return forecast
+
+    except:
+        return None
 
 # =========================================================
 # TABS
@@ -226,126 +316,223 @@ with tab1:
 
     summary = []
 
-    for ticker in tickers:
+    if len(market_data) == 0:
 
-        if ticker not in market_data:
-            continue
+        st.error("No market data available.")
 
-        df = market_data[ticker].copy()
+    else:
 
-        df = add_indicators(df)
+        for ticker in tickers:
 
-        returns = df["Close"].pct_change().dropna()
+            if ticker not in market_data:
+                continue
 
-        benchmark_returns = benchmark_data["Close"].pct_change().dropna()
+            try:
 
-        min_len = min(len(returns), len(benchmark_returns))
+                df = market_data[ticker].copy()
 
-        returns = returns[-min_len:]
-        benchmark_returns = benchmark_returns[-min_len:]
+                df = add_indicators(df)
 
-        ann_return = annualized_return(returns)
-        ann_vol = annualized_volatility(returns)
+                returns = (
+                    df["Close"]
+                    .pct_change()
+                    .dropna()
+                )
 
-        sharpe = sharpe_ratio(
-            ann_return,
-            ann_vol,
-            risk_free_rate
+                if len(returns) == 0:
+                    continue
+
+                ann_return = annualized_return(
+                    returns
+                )
+
+                ann_vol = annualized_volatility(
+                    returns
+                )
+
+                sharpe = sharpe_ratio(
+                    ann_return,
+                    ann_vol,
+                    risk_free_rate
+                )
+
+                if not benchmark_data.empty:
+
+                    benchmark_returns = (
+                        benchmark_data["Close"]
+                        .pct_change()
+                        .dropna()
+                    )
+
+                    min_len = min(
+                        len(returns),
+                        len(benchmark_returns)
+                    )
+
+                    beta_value = beta(
+                        returns[-min_len:],
+                        benchmark_returns[-min_len:]
+                    )
+
+                else:
+                    beta_value = 0
+
+                var = value_at_risk(
+                    returns
+                )
+
+                signal = generate_signal(
+                    df
+                )
+
+                try:
+
+                    info = yf.Ticker(
+                        ticker
+                    ).info
+
+                except:
+
+                    info = {}
+
+                pe_ratio = info.get(
+                    "trailingPE"
+                )
+
+                eps = info.get(
+                    "trailingEps"
+                )
+
+                market_cap = info.get(
+                    "marketCap"
+                )
+
+                free_cash_flow = info.get(
+                    "freeCashflow"
+                )
+
+                summary.append({
+
+                    "Ticker": ticker,
+
+                    "Annual Return %":
+                    round(ann_return * 100, 2),
+
+                    "Volatility %":
+                    round(ann_vol * 100, 2),
+
+                    "Sharpe":
+                    round(sharpe, 2),
+
+                    "Beta":
+                    round(beta_value, 2),
+
+                    "VaR %":
+                    round(var * 100, 2),
+
+                    "P/E":
+                    pe_ratio,
+
+                    "EPS":
+                    eps,
+
+                    "FCF":
+                    free_cash_flow,
+
+                    "Market Cap":
+                    market_cap,
+
+                    "Signal":
+                    signal
+                })
+
+                st.subheader(
+                    f"{ticker} Price Chart"
+                )
+
+                fig = go.Figure()
+
+                fig.add_trace(
+                    go.Candlestick(
+                        x=df.index,
+                        open=df["Open"],
+                        high=df["High"],
+                        low=df["Low"],
+                        close=df["Close"],
+                        name=ticker
+                    )
+                )
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=df.index,
+                        y=df["EMA7"],
+                        name="EMA7"
+                    )
+                )
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=df.index,
+                        y=df["EMA30"],
+                        name="EMA30"
+                    )
+                )
+
+                fig.update_layout(
+                    template="plotly_dark",
+                    height=600
+                )
+
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True
+                )
+
+                forecast = forecast_prices(df)
+
+                if forecast is not None:
+
+                    st.subheader(
+                        f"{ticker} 3-Month Forecast"
+                    )
+
+                    forecast_df = pd.DataFrame({
+                        "Forecast": forecast
+                    })
+
+                    st.line_chart(
+                        forecast_df
+                    )
+
+            except Exception as e:
+
+                st.warning(
+                    f"Error processing {ticker}: {e}"
+                )
+
+        summary_df = pd.DataFrame(
+            summary
         )
 
-        beta_value = beta(
-            returns,
-            benchmark_returns
+        st.subheader(
+            "Portfolio Summary"
         )
 
-        var = value_at_risk(returns)
-
-        signal = generate_signal(df)
-
-        info = yf.Ticker(ticker).info
-
-        pe_ratio = info.get("trailingPE")
-        eps = info.get("trailingEps")
-        market_cap = info.get("marketCap")
-        free_cash_flow = info.get("freeCashflow")
-
-        summary.append({
-            "Ticker": ticker,
-            "Annual Return": round(ann_return * 100, 2),
-            "Volatility": round(ann_vol * 100, 2),
-            "Sharpe": round(sharpe, 2),
-            "Beta": round(beta_value, 2),
-            "VaR": round(var * 100, 2),
-            "P/E": pe_ratio,
-            "EPS": eps,
-            "FCF": free_cash_flow,
-            "Market Cap": market_cap,
-            "Signal": signal
-        })
-
-        st.subheader(f"{ticker} Price Chart")
-
-        fig = go.Figure()
-
-        fig.add_trace(
-            go.Candlestick(
-                x=df.index,
-                open=df["Open"],
-                high=df["High"],
-                low=df["Low"],
-                close=df["Close"],
-                name=ticker
-            )
-        )
-
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df["EMA7"],
-                name="EMA7"
-            )
-        )
-
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df["EMA30"],
-                name="EMA30"
-            )
-        )
-
-        fig.update_layout(
-            template="plotly_dark",
-            height=600
-        )
-
-        st.plotly_chart(
-            fig,
+        st.dataframe(
+            summary_df,
             use_container_width=True
         )
 
-        st.subheader(f"{ticker} Forecast")
+        if not vix_data.empty:
 
-        forecast = forecast_prices(df)
+            st.subheader(
+                "VIX Volatility Index"
+            )
 
-        forecast_df = pd.DataFrame({
-            "Forecast": forecast
-        })
-
-        st.line_chart(forecast_df)
-
-    summary_df = pd.DataFrame(summary)
-
-    st.subheader("Portfolio Summary")
-
-    st.dataframe(
-        summary_df,
-        use_container_width=True
-    )
-
-    st.subheader("VIX Volatility Index")
-
-    st.line_chart(vix_data["Close"])
+            st.line_chart(
+                vix_data["Close"]
+            )
 
 # =========================================================
 # BENCHMARK
@@ -353,41 +540,43 @@ with tab1:
 
 with tab2:
 
-    fig = go.Figure()
+    if not benchmark_data.empty:
 
-    for ticker in tickers:
+        fig = go.Figure()
 
-        if ticker not in market_data:
-            continue
+        for ticker in tickers:
 
-        temp = market_data[ticker]
+            if ticker not in market_data:
+                continue
+
+            temp = market_data[ticker]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=temp.index,
+                    y=temp["Close"],
+                    name=ticker
+                )
+            )
 
         fig.add_trace(
             go.Scatter(
-                x=temp.index,
-                y=temp["Close"],
-                name=ticker
+                x=benchmark_data.index,
+                y=benchmark_data["Close"],
+                name=benchmark,
+                line=dict(width=4)
             )
         )
 
-    fig.add_trace(
-        go.Scatter(
-            x=benchmark_data.index,
-            y=benchmark_data["Close"],
-            name=benchmark,
-            line=dict(width=4)
+        fig.update_layout(
+            template="plotly_dark",
+            height=700
         )
-    )
 
-    fig.update_layout(
-        template="plotly_dark",
-        height=700
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
 
 # =========================================================
 # CORRELATION
@@ -407,23 +596,25 @@ with tab3:
             .pct_change()
         )
 
-    corr = returns_df.corr()
+    if not returns_df.empty:
 
-    fig = px.imshow(
-        corr,
-        text_auto=True,
-        color_continuous_scale="RdBu"
-    )
+        corr = returns_df.corr()
 
-    fig.update_layout(
-        template="plotly_dark",
-        height=700
-    )
+        fig = px.imshow(
+            corr,
+            text_auto=True,
+            color_continuous_scale="RdBu"
+        )
 
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
+        fig.update_layout(
+            template="plotly_dark",
+            height=700
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
 
 # =========================================================
 # COVARIANCE
@@ -431,23 +622,25 @@ with tab3:
 
 with tab4:
 
-    cov = returns_df.cov() * 252
+    if not returns_df.empty:
 
-    fig = px.imshow(
-        cov,
-        text_auto=True,
-        color_continuous_scale="Viridis"
-    )
+        cov = returns_df.cov() * 252
 
-    fig.update_layout(
-        template="plotly_dark",
-        height=700
-    )
+        fig = px.imshow(
+            cov,
+            text_auto=True,
+            color_continuous_scale="Viridis"
+        )
 
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
+        fig.update_layout(
+            template="plotly_dark",
+            height=700
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
 
 # =========================================================
 # DOWNLOAD
@@ -455,35 +648,45 @@ with tab4:
 
 with tab5:
 
-    output_file = "financial_risk_analysis.xlsx"
+    if 'summary_df' in locals():
 
-    with pd.ExcelWriter(
-        output_file,
-        engine="openpyxl"
-    ) as writer:
-
-        summary_df.to_excel(
-            writer,
-            sheet_name="Summary",
-            index=False
+        output_file = (
+            "financial_risk_analysis.xlsx"
         )
 
-        corr.to_excel(
-            writer,
-            sheet_name="Correlation"
-        )
+        with pd.ExcelWriter(
+            output_file,
+            engine="openpyxl"
+        ) as writer:
 
-        cov.to_excel(
-            writer,
-            sheet_name="Covariance"
-        )
+            summary_df.to_excel(
+                writer,
+                sheet_name="Summary",
+                index=False
+            )
 
-    with open(output_file, "rb") as f:
+            if 'corr' in locals():
 
-        st.download_button(
-            "Download Excel",
-            f,
-            file_name=output_file
-        )
+                corr.to_excel(
+                    writer,
+                    sheet_name="Correlation"
+                )
 
-st.success("Dashboard Loaded Successfully")
+            if 'cov' in locals():
+
+                cov.to_excel(
+                    writer,
+                    sheet_name="Covariance"
+                )
+
+        with open(output_file, "rb") as f:
+
+            st.download_button(
+                "Download Excel",
+                f,
+                file_name=output_file
+            )
+
+st.success(
+    "Dashboard Loaded Successfully"
+)
